@@ -1,0 +1,2 @@
+Python: C:\Python314\python.exe
+Error: No module named 'duckduckgo_search'

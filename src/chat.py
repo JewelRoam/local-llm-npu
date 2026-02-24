@@ -10,6 +10,12 @@ import time
 from pathlib import Path
 from dotenv import load_dotenv
 
+try:
+    from ddgs import DDGS
+    HAS_WEBSEARCH = True
+except ImportError:
+    HAS_WEBSEARCH = False
+
 # Load environment variables
 load_dotenv()
 
@@ -41,6 +47,25 @@ def print_banner():
     print("  Mistral-7B NPU Chat")
     print("  Intel AI Boost Accelerated")
     print("=" * 50)
+
+
+def web_search(query, max_results=5):
+    """Search the web via DuckDuckGo and return formatted context string."""
+    if not HAS_WEBSEARCH:
+        return None, "[!] ddgs not installed. Run: pip install ddgs"
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        if not results:
+            return None, "[!] No results found."
+        lines = [f"Web search results for: {query}\n"]
+        for i, r in enumerate(results, 1):
+            lines.append(f"[{i}] {r.get('title', '')}")
+            lines.append(f"    {r.get('body', '')}")
+            lines.append(f"    Source: {r.get('href', '')}\n")
+        return "\n".join(lines), None
+    except Exception as e:
+        return None, f"[!] Search failed: {e}"
 
 
 def find_model_path():
@@ -98,7 +123,8 @@ def main():
         sys.exit(1)
 
     print(f"[OK] {DEVICE} ready! (loaded in {load_time:.1f}s)\n")
-    print("Commands: /exit to quit, /clear to clear screen, /reset to forget history\n")
+    web_status = "enabled" if HAS_WEBSEARCH else "disabled (pip install duckduckgo-search)"
+    print(f"Commands: /exit  /clear  /reset  /web <query> (websearch: {web_status})\n")
     print("-" * 50)
 
     # Generation config
@@ -135,10 +161,30 @@ def main():
             print("\n[!] Memory cleared.")
             continue
 
+        # /web <query> — search the web and inject results as context
+        if user_input.lower().startswith('/web '):
+            query = user_input[5:].strip()
+            if not query:
+                print("\n[!] Usage: /web <your search query>")
+                continue
+            print(f"\n[Web] Searching: {query} ...")
+            context, err = web_search(query)
+            if err:
+                print(err)
+                continue
+            print(context)
+            print("[Web] Asking the model...\n")
+            prompt = (
+                f"{context}\n\n"
+                f"Based on the web search results above, answer the following question: {query}"
+                f" (Reply in English.)"
+            )
+        else:
+            prompt = user_input + " (Reply in English.)"
+
         print("\nAI > ", end="", flush=True)
 
         try:
-            prompt = user_input + " (Reply in English.)"
             pipe.generate(
                 prompt,
                 config,
