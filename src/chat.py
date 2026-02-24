@@ -11,10 +11,57 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 try:
+    from prompt_toolkit import prompt as pt_prompt
+    from prompt_toolkit.key_binding import KeyBindings
+    HAS_MULTILINE = True
+except ImportError:
+    HAS_MULTILINE = False
+
+try:
     from ddgs import DDGS
     HAS_WEBSEARCH = True
 except ImportError:
     HAS_WEBSEARCH = False
+
+try:
+    from deep_translator import GoogleTranslator
+    HAS_TRANSLATOR = True
+except ImportError:
+    HAS_TRANSLATOR = False
+
+
+def translate_to_english(text):
+    """Translate text to English. Returns (translated, error)."""
+    if not HAS_TRANSLATOR:
+        return text, None
+    try:
+        result = GoogleTranslator(source='auto', target='en').translate(text)
+        return result, None
+    except Exception as e:
+        return text, f"[!] Translation failed: {e}"
+
+
+def read_input(prompt_text):
+    """Read user input. Supports multi-line with Alt+Enter if prompt_toolkit is available."""
+    if not HAS_MULTILINE:
+        return input(prompt_text)
+
+    kb = KeyBindings()
+
+    @kb.add('enter')
+    def submit(event):
+        event.current_buffer.validate_and_handle()
+
+    @kb.add('escape', 'enter')
+    def newline(event):
+        event.current_buffer.insert_text('\n')
+
+    return pt_prompt(
+        prompt_text,
+        multiline=True,
+        key_bindings=kb,
+        prompt_continuation='     ',
+    )
 
 # Load environment variables
 load_dotenv()
@@ -34,6 +81,21 @@ SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "You are a helpful and accurate assistant. Avoid contradictions and obvious errors. If uncertain, say so. Respond in English unless explicitly asked otherwise. Be concise."
 )
+
+LOGIC_AUDIT_INSTRUCTION = """
+
+[LOGIC AUDIT MODE — follow this workflow before answering]
+
+**[Logic Audit]**
+- Step A (Grounding): Extract all numeric values, entities, and key claims. Map them to real-world scale (e.g., monetary amounts vs. GDP/market cap, distances, time costs).
+- Step B (Conflict Detection): Actively search for flaws in a naive answer:
+  - Efficiency contradiction: Does the action cost more than it gains?
+  - Physical necessity: Does the task require specific conditions or tools?
+  - Source reliability: Is any claim in an AI hallucination-prone zone?
+- Summarize what conflicts (if any) were found.
+
+**[Final Verified Answer]**
+Provide the corrected, logically consistent answer after completing the audit above."""
 
 
 def clear_screen():
@@ -124,7 +186,9 @@ def main():
 
     print(f"[OK] {DEVICE} ready! (loaded in {load_time:.1f}s)\n")
     web_status = "enabled" if HAS_WEBSEARCH else "disabled (pip install duckduckgo-search)"
-    print(f"Commands: /exit  /clear  /reset  /web <query> (websearch: {web_status})\n")
+    multiline_status = "Alt+Enter for newline" if HAS_MULTILINE else "disabled (pip install prompt_toolkit)"
+    print(f"Commands: /exit  /clear  /reset  /web <query> (websearch: {web_status})")
+    print(f"          /logic — deep logic audit mode  |  multi-line: {multiline_status}\n")
     print("-" * 50)
 
     # Generation config
@@ -137,7 +201,7 @@ def main():
 
     while True:
         try:
-            user_input = input("\nYou > ").strip()
+            user_input = read_input("\nYou > ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n\nBye!")
             break
@@ -161,14 +225,36 @@ def main():
             print("\n[!] Memory cleared.")
             continue
 
+        # Detect /logic mode (can appear anywhere in the message)
+        logic_mode = '/logic' in user_input.lower()
+        clean_input = user_input.replace('/logic', '').replace('/LOGIC', '').strip()
+        if logic_mode:
+            print("\n[Logic] Deep audit mode activated.")
+
         # /web <query> — search the web and inject results as context
-        if user_input.lower().startswith('/web '):
-            query = user_input[5:].strip()
-            if not query:
-                print("\n[!] Usage: /web <your search query>")
+        # Match /web followed by space, newline, or end-of-string
+        web_body = None
+        if clean_input.lower().startswith('/web'):
+            rest = clean_input[4:]
+            if not rest or rest[0] in (' ', '\n', '\r', '\t'):
+                web_body = rest.strip()
+
+        if web_body is not None:
+            if not web_body:
+                print("\n[!] Usage: /web <query>  or  /web <query> /logic")
                 continue
-            print(f"\n[Web] Searching: {query} ...")
-            context, err = web_search(query)
+            # Use first non-empty line as search query; full body as the question
+            non_empty_lines = [l.strip() for l in web_body.split('\n') if l.strip()]
+            search_query = non_empty_lines[0] if non_empty_lines else web_body[:100]
+
+            # Translate query to English for better search results
+            eng_query, t_err = translate_to_english(search_query)
+            if t_err:
+                print(t_err)
+            elif eng_query != search_query:
+                print(f"\n[Web] Translated query: {eng_query}")
+            print(f"\n[Web] Searching: {eng_query} ...")
+            context, err = web_search(eng_query)
             if err:
                 print(err)
                 continue
@@ -176,11 +262,14 @@ def main():
             print("[Web] Asking the model...\n")
             prompt = (
                 f"{context}\n\n"
-                f"Based on the web search results above, answer the following question: {query}"
-                f" (Reply in English.)"
+                f"Based on the web search results above, answer the following question:\n{web_body}"
+                f"\n(Reply in English.)"
             )
         else:
-            prompt = user_input + " (Reply in English.)"
+            prompt = clean_input + " (Reply in English.)"
+
+        if logic_mode:
+            prompt += LOGIC_AUDIT_INSTRUCTION
 
         print("\nAI > ", end="", flush=True)
 

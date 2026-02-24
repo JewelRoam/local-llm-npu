@@ -14,3 +14,9 @@ psutil>=5.9.0
 
 # Web search (optional, for /web command)
 ddgs>=9.0.0
+
+# Multi-line input support
+prompt_toolkit>=3.0.0
+
+# Auto-translate search queries to English
+deep-translator>=1.11.0
